@@ -82,10 +82,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         if self.path.endswith("/v1/models"):
-            return self.send_json(200, {"models": [
-                {"name": "jev-1.13", "description": "Jev System One model", "release_date": "2026-09-01"},
-                {"name": "jev-latest", "description": "Alias of the newest Jev", "release_date": "2026-09-01"},
-            ]})
+            return self.send_json(
+                200,
+                {
+                    "models": [
+                        {"name": "jev-1.13", "description": "Jev System One model", "release_date": "2026-09-01"},
+                        {"name": "jev-latest", "description": "Alias of the newest Jev", "release_date": "2026-09-01"},
+                    ]
+                },
+            )
         self.send_json(404, {"detail": "Not Found"})
 
     def do_POST(self):
@@ -114,11 +119,14 @@ class Handler(BaseHTTPRequestHandler):
             answers = {name: answer(q, text) for name, q in questions.items()}
         except (ValueError, KeyError, TypeError) as exc:
             return self.send_json(400, {"error": str(exc)})
-        self.send_json(200, {
-            "model": request.get("model"),
-            "answers": answers,
-            "usage": {"input_tokens": len(text), "output_tokens": len(answers)},
-        })
+        self.send_json(
+            200,
+            {
+                "model": request.get("model"),
+                "answers": answers,
+                "usage": {"input_tokens": len(text), "output_tokens": len(answers)},
+            },
+        )
 
 
 def main():
