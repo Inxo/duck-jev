@@ -1,0 +1,129 @@
+# name: test/sql/jev_mock.test
+# description: end-to-end tests against the mock TypeSafe server (test/mock/mock_typesafe_server.py)
+# group: [sql]
+
+require jev
+
+require json
+
+require-env JEV_MOCK_URL
+
+statement ok
+SET jev_base_url = '${JEV_MOCK_URL}';
+
+statement ok
+SET jev_api_key = 'test-key';
+
+# noul
+query II
+SELECT jev_noul('I was charged twice, I want a refund', 'Does the customer ask for a refund?'),
+       jev_noul('Thanks, all good', 'Does the customer ask for a refund?', 'asks for money back', 'anything else');
+----
+0.9	0.1
+
+# choice with plain labels and with described labels
+query II
+SELECT jev_choice('My billing statement is wrong', 'What is this ticket about?', ['billing', 'technical', 'other']),
+       jev_choice('The app crashes: technical issue', 'Topic?', MAP {'billing': 'Payments', 'technical': 'Bugs'});
+----
+billing	technical
+
+query III
+SELECT r.choice, r.confidence, cardinality(r.probabilities)
+FROM (SELECT jev_choice_detail('nothing relevant', 'Topic?', ['billing', 'technical', 'other']) AS r);
+----
+other	0.8	3
+
+# score
+query I
+SELECT jev_score('It is broken!!', 'How severe is the issue?', ['Cosmetic', 'Workaround available', 'Blocks the task']);
+----
+2.0
+
+query III
+SELECT r.score, r.confidence, r.probabilities
+FROM (SELECT jev_score_detail('Meh!', 'Severity?', ['low', 'mid', 'high']) AS r);
+----
+1.0	0.9	[0.0, 1.0, 0.0]
+
+# raw System One call with JSON state, several questions and the configured model
+query IIII
+SELECT r->>'$.model', (r->'$.answers.refund.noul')::DOUBLE, r->>'$.answers.topic.choice', (r->'$.usage.output_tokens')::INT
+FROM (SELECT jev_system_one(
+    '{"ticket": "please refund my technical subscription"}'::JSON,
+    '{"refund": {"type": "noul", "instructions": "Refund?"},
+      "topic": {"type": "choice", "instructions": "Topic?", "criteria": {"billing": null, "technical": null}}}'
+) AS r);
+----
+jev-latest	0.9	technical	2
+
+# model override per call and via setting
+query I
+SELECT jev_system_one('x', '{"q": {"type": "noul"}}', 'jev-1.13')->>'$.model';
+----
+jev-1.13
+
+statement ok
+SET jev_model = 'jev-custom';
+
+query I
+SELECT jev_system_one('x', '{"q": {"type": "noul"}}')->>'$.model';
+----
+jev-custom
+
+statement ok
+RESET jev_model;
+
+# many rows, duplicates and NULLs in one vector
+query III
+SELECT count(*), count(p), sum(p)::DECIMAL(10, 1)
+FROM (
+    SELECT jev_noul(CASE WHEN i % 10 = 0 THEN NULL WHEN i % 2 = 0 THEN 'refund ' || (i % 7) ELSE 'hello' END,
+                    'Refund?') AS p
+    FROM range(3000) t(i)
+);
+----
+3000	2700	1230.0
+
+# 503 with Retry-After is retried transparently
+query I
+SELECT jev_noul('__retry__', 'Refund?');
+----
+0.1
+
+# API errors are reported with the server's message and request id
+statement error
+SELECT jev_noul('__invalid__', 'Refund?');
+----
+TypeSafe API error 422 (Unprocessable entity): state: state is not allowed [request req_mock]
+
+# models endpoint
+query III
+SELECT name, description, release_date FROM jev_models() ORDER BY name;
+----
+jev-1.13	Jev System One model	2026-09-01
+jev-latest	Alias of the newest Jev	2026-09-01
+
+# a secret is used when no setting is present
+statement ok
+RESET jev_api_key;
+
+statement ok
+CREATE SECRET mock_key (TYPE typesafe, API_KEY 'test-key');
+
+query I
+SELECT jev_noul('refund', 'Refund?');
+----
+0.9
+
+statement ok
+DROP SECRET mock_key;
+
+# wrong API key
+statement ok
+SET jev_api_key = 'wrong';
+
+statement error
+SELECT jev_noul('refund', 'Refund?');
+----
+TypeSafe API error 401 (Authentication failed): Invalid API key.

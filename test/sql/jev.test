@@ -1,0 +1,91 @@
+# name: test/sql/jev.test
+# description: jev extension tests that need no network access
+# group: [sql]
+
+statement error
+SELECT jev_noul('hello', 'Is this a greeting?');
+----
+Catalog Error: Scalar Function with name jev_noul does not exist!
+
+require jev
+
+# Settings are registered with sensible defaults
+query I
+SELECT current_setting('jev_max_concurrency');
+----
+8
+
+query I
+SELECT current_setting('jev_timeout_ms');
+----
+30000
+
+# NULL inputs never reach the API and produce NULL
+query IIII
+SELECT jev_noul(NULL, 'q'), jev_choice(NULL, 'q', ['a', 'b']), jev_score(NULL, 'q', ['low', 'high']),
+       jev_system_one(NULL, '{"q": {"type": "noul"}}');
+----
+NULL	NULL	NULL	NULL
+
+# Argument validation happens before any request is sent
+statement error
+SELECT jev_score('text', 'How severe?', ['only one level']);
+----
+the rubric needs at least two levels
+
+statement error
+SELECT jev_choice('text', 'Which?', []::VARCHAR[]);
+----
+at least one choice label is required
+
+statement error
+SELECT jev_system_one('text', '[1, 2]');
+----
+questions must be a non-empty JSON object
+
+# A missing API key is reported clearly
+statement ok
+SET jev_base_url = 'http://127.0.0.1:9';
+
+statement error
+SELECT jev_noul('text', 'Is this a question?');
+----
+No TypeSafe API key was provided
+
+# An invalid base URL is rejected
+statement ok
+SET jev_base_url = 'ftp://example.com';
+
+statement error
+SELECT jev_noul('text', 'q');
+----
+jev_base_url must start with http:// or https://
+
+statement ok
+RESET jev_base_url;
+
+# Secrets: the API key is redacted
+statement ok
+CREATE SECRET ts (TYPE typesafe, API_KEY 'sk-secret-value', MODEL 'jev-1.13');
+
+query II
+SELECT name, type FROM duckdb_secrets() WHERE name = 'ts';
+----
+ts	typesafe
+
+query I
+SELECT secret_string LIKE '%sk-secret-value%' FROM duckdb_secrets() WHERE name = 'ts';
+----
+false
+
+# Connection failures surface as IO errors after retries
+statement ok
+SET jev_base_url = 'http://127.0.0.1:9';
+
+statement ok
+SET jev_max_retries = 0;
+
+statement error
+SELECT jev_noul('text', 'q');
+----
+TypeSafe API request POST http://127.0.0.1:9/v1/systemone failed
